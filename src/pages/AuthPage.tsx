@@ -250,6 +250,40 @@ const AuthPage = () => {
 		setFilteredCities([]);
 	};
 
+	// Verifică dacă email-ul există deja în baza de date
+	const checkEmailExists = async (email: string): Promise<boolean> => {
+		try {
+			setIsValidating(true);
+			
+			// Folosim funcția de sign-in cu un password invalid pentru a verifica dacă email-ul există
+			// Dacă primim eroarea "Invalid login credentials", înseamnă că email-ul există
+			// Dacă primim eroarea "User not found", înseamnă că email-ul nu există
+			const { error } = await supabase.auth.signInWithPassword({
+				email,
+				password: "check_email_exists_only",
+			});
+			
+			if (error) {
+				// Verificăm mesajul de eroare
+				if (error.message.includes("Invalid login credentials")) {
+					// Email-ul există
+					return true;
+				}
+				// Alte erori înseamnă că email-ul probabil nu există
+				return false;
+			}
+			
+			// Dacă nu avem eroare, înseamnă că autentificarea a reușit (ceea ce e ciudat)
+			// Dar înseamnă că email-ul există
+			return true;
+		} catch (err) {
+			console.error("Error checking email:", err);
+			return false;
+		} finally {
+			setIsValidating(false);
+		}
+	};
+
 	const validateForm = async (): Promise<boolean> => {
 		const errors: Record<string, string> = {};
 
@@ -279,7 +313,13 @@ const AuthPage = () => {
 			const emailError = validateEmail(formData.email);
 			if (emailError) errors.email = emailError;
 
-			// NU MAI VERIFICĂM DACĂ EMAIL-UL EXISTĂ - lăsăm Supabase să gestioneze asta
+			// Verificăm dacă email-ul există deja
+			if (!emailError) {
+				const emailExists = await checkEmailExists(formData.email.trim());
+				if (emailExists) {
+					errors.email = "Acest email este deja înregistrat. Încearcă să te conectezi în schimb.";
+				}
+			}
 
 			const phoneError = validatePhone(formData.phone);
 			if (phoneError) errors.phone = phoneError;
