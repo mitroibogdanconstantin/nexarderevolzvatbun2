@@ -34,6 +34,8 @@ const CreateListingPage = () => {
 	const [showSuccessModal, setShowSuccessModal] = useState(false);
 	const [createdListingId, setCreatedListingId] = useState<string | null>(null);
 	const navigate = useNavigate();
+	const submitAttempts = useRef(0);
+	const maxSubmitAttempts = 3;
 
 	const [formData, setFormData] = useState({
 		title: "",
@@ -93,7 +95,7 @@ const CreateListingPage = () => {
 				.single();
 
 			if (profileError) {
-				console.error("Error loading profile:", profileError);
+				console.error("❌ Eroare la încărcarea profilului:", profileError);
 				// If profile doesn't exist, redirect to profile page to create it
 				navigate("/profil");
 				return;
@@ -349,7 +351,7 @@ const CreateListingPage = () => {
 		return Object.keys(newErrors).length === 0;
 	};
 
-	const handleInputChange = (field: string, value: string) => {
+	const handleInputChange = (field: string, value: string | boolean) => {
 		setFormData((prev) => ({ ...prev, [field]: value }));
 
 		// Clear error when user starts typing
@@ -432,6 +434,7 @@ const CreateListingPage = () => {
 		if (!validateStep(4)) return;
 
 		setIsSubmitting(true);
+		submitAttempts.current += 1;
 
 		try {
 			if (!userProfile) {
@@ -491,40 +494,113 @@ const CreateListingPage = () => {
 			console.log("availability:", listingData.availability);
 			console.log("📝 Mapped listing data:", listingData);
 
-			// Trimitem anunțul și imaginile la server
-			console.log(
-				"📤 Trimit date către listings.create:",
-				listingData,
-				imageFiles,
-			);
-			console.log("🔥 seller_id înainte de inserție:", listingData.seller_id);
+			// Folosim o abordare mai robustă pentru încărcarea imaginilor
+			// Împărțim procesul în două etape pentru a evita timeout-urile
+			
+			// 1. Mai întâi creăm anunțul fără imagini
+			const initialListingData = {
+				...listingData,
+				images: [] // Inițial fără imagini
+			};
+			
+			console.log("🔥 seller_id înainte de inserție:", initialListingData.seller_id);
 			console.log("🔐 authUser.user.id înainte de inserție:", authUser.user.id);
-			console.log("🔎 seller_id TRIMIS (corectat):", listingData.seller_id);
-
-			const result = await listings.create(listingData, imageFiles);
-			console.log("📬 Răspuns complet listings.create:", result);
-
-			const { data, error } = result;
-			console.log("📬 Răspuns de la server:", data, error);
-
-			if (error) {
-				console.error("❌ Error creating listing:", error);
-				throw new Error(error.message || "Eroare la crearea anunțului");
+			
+			// Creăm anunțul inițial
+			const { data: initialListing, error: initialError } = await supabase
+				.from("listings")
+				.insert([initialListingData])
+				.select()
+				.single();
+				
+			if (initialError) {
+				console.error("❌ Error creating initial listing:", initialError);
+				throw new Error(initialError.message || "Eroare la crearea anunțului");
 			}
+			
+			console.log("✅ Initial listing created successfully:", initialListing);
+			
+			// 2. Apoi încărcăm imaginile și actualizăm anunțul
+			if (imageFiles.length > 0) {
+				const imageUrls: string[] = [];
+				
+				for (const image of imageFiles) {
+					try {
+						const fileExt = image.name.split(".").pop();
+						const fileName = `${Date.now()}-${Math.random().toString(36).substring(2, 15)}.${fileExt}`;
+						const filePath = `${userProfile.id}/${fileName}`;
 
-			console.log("✅ Listing created successfully:", data);
+						console.log(`📤 Uploading image: ${fileName}`);
 
-			setCreatedListingId(data.id);
+						const { error: uploadError, data: uploadData } =
+							await supabase.storage
+								.from("listing-images")
+								.upload(filePath, image, {
+									cacheControl: "3600",
+									upsert: false,
+								});
+
+						if (uploadError) {
+							console.error("❌ Error uploading image:", uploadError);
+							continue; // Continuăm cu următoarea imagine
+						}
+
+						console.log("✅ Image uploaded:", uploadData?.path);
+
+						// Obținem URL-ul public pentru imagine
+						const {
+							data: { publicUrl },
+						} = supabase.storage.from("listing-images").getPublicUrl(filePath);
+
+						console.log("🔗 Public URL:", publicUrl);
+						imageUrls.push(publicUrl);
+					} catch (uploadErr) {
+						console.error("❌ Unexpected error uploading image:", uploadErr);
+						// Continuăm cu următoarea imagine
+					}
+				}
+				
+				// Actualizăm anunțul cu imaginile încărcate
+				if (imageUrls.length > 0) {
+					const { error: updateError } = await supabase
+						.from("listings")
+						.update({ images: imageUrls })
+						.eq("id", initialListing.id);
+						
+					if (updateError) {
+						console.error("❌ Error updating listing with images:", updateError);
+						// Nu aruncăm eroare aici, continuăm cu anunțul creat
+					}
+				}
+			}
+			
+			setCreatedListingId(initialListing.id);
 			setShowSuccessModal(true);
+			
 		} catch (error: any) {
 			console.error("💥 Error creating listing:", error);
+			
+			// Verificăm dacă mai putem încerca din nou
+			if (submitAttempts.current < maxSubmitAttempts) {
+				console.log(`🔄 Retrying submission (attempt ${submitAttempts.current}/${maxSubmitAttempts})...`);
+				setTimeout(() => {
+					setIsSubmitting(false);
+					handleSubmit(); // Încercăm din nou
+				}, 1000); // Așteptăm 1 secundă înainte de a reîncerca
+				return;
+			}
+			
 			setErrors({
 				submit:
 					error.message ||
 					"A apărut o eroare la publicarea anunțului. Te rog încearcă din nou.",
 			});
-		} finally {
 			setIsSubmitting(false);
+		} finally {
+			if (submitAttempts.current >= maxSubmitAttempts || showSuccessModal) {
+				setIsSubmitting(false);
+				submitAttempts.current = 0;
+			}
 		}
 	};
 
